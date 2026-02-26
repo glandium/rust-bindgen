@@ -1033,6 +1033,43 @@ impl CodeGenerator for Type {
                         );
                         return;
                     }
+
+                    // Check if we're trying to create a simple (non-template) alias to
+                    // a template definition where with_implicit_template_params would
+                    // add parameters. This can happen when libclang reports a type like
+                    // `_Vector_val<dependent_type>` where the template argument couldn't
+                    // be resolved, causing rust-bindgen to reference the template definition
+                    // instead of an instantiation. The generated code would include the
+                    // template definition's parameter names (like `_Val_types`), which
+                    // aren't in scope. We generate an opaque type instead.
+                    //
+                    // Only apply this for non-template aliases (outer_params.is_empty())
+                    // to Comp (struct/class) types, as template aliases like
+                    // `reverse_iterator__Prevent_inheriting_unwrap<_BidIt>` are valid.
+                    if matches!(self.kind(), TypeKind::Alias(_)) && outer_params.is_empty() {
+                        if let TypeKind::Comp(_) = inner_item.expect_type().kind() {
+                            // Check if the inner item has its own template params that would be
+                            // added by with_implicit_template_params. We use self_template_params
+                            // (not used_template_params) because used_template_params collects from
+                            // ancestor items only and returns empty for a global template
+                            // definition's own parameters.
+                            let params = inner_item.self_template_params(ctx);
+                            if !params.is_empty() {
+                                warn!(
+                                    "Generating opaque type for non-template alias that would \
+                                     include template parameters: {item:?}"
+                                );
+                                let rust_name = ctx.rust_ident(&name);
+                                let opaque_ty = self.to_opaque(ctx, item);
+                                let mut tokens = quote! {};
+                                tokens.append_all(quote! {
+                                    pub type #rust_name = #opaque_ty;
+                                });
+                                result.push(tokens);
+                                return;
+                            }
+                        }
+                    }
                 }
 
                 let rust_name = ctx.rust_ident(&name);
