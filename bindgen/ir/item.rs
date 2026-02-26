@@ -1261,6 +1261,28 @@ impl TemplateParameters for ItemKind {
     }
 }
 
+/// Check whether a type spelling looks like a dependent member type, i.e.
+/// something like `typename T::MemberName` whose canonical spelling in the
+/// libclang API is `"type-parameter-X-Y::MemberName"`.
+///
+/// Such types cannot be expressed in Rust and should be treated as opaque;
+/// a TypeRef to T that appears as a child of such a type in the AST refers
+/// to T being part of the *scope accessor*, not being the type itself.
+fn looks_like_dependent_member_type_spelling(spelling: &str) -> bool {
+    // Expected form: "type-parameter-X-Y::SomeName" (one or more "::" segments
+    // following a canonical type-parameter identifier).
+    let Some(colon_pos) = spelling.find("::") else {
+        return false;
+    };
+    let prefix = &spelling[..colon_pos];
+    // The prefix must be exactly a canonical type-parameter name:
+    // "type-parameter-" followed only by ASCII digits and hyphens.
+    prefix.starts_with("type-parameter-") &&
+        prefix["type-parameter-".len()..]
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '-')
+}
+
 // An utility function to handle recursing inside nested types.
 fn visit_child(
     cur: clang::Cursor,
@@ -1273,6 +1295,31 @@ fn visit_child(
     use clang_sys::*;
     if result.is_ok() {
         return CXChildVisit_Break;
+    }
+
+    // When resolving an unexposed (dependent) type by visiting its children,
+    // a TypeRef child pointing to a template type parameter may mean that
+    // parameter *appears in* the expression rather than that the expression
+    // *resolves to* that parameter.  For example, `typename T::Associated`
+    // on newer clang versions exposes a TypeRef(T) child, but the type is
+    // not T itself — it is an inaccessible dependent member type that should
+    // be treated as opaque.
+    //
+    // We identify this case by the canonical spelling of the unexposed type:
+    // dependent member types spelled as `typename T::Foo` have a canonical
+    // spelling of the form "type-parameter-X-Y::MemberName".  Skip TypeRef
+    // children only for such spellings so that legitimate uses of TypeRef
+    // children (e.g. struct fields `T member`, `const T*`, function pointer
+    // types) continue to work.
+    if ty.kind() == CXType_Unexposed &&
+        cur.kind() == CXCursor_TypeRef &&
+        cur.referenced()
+            .map_or(false, |r| r.kind() == CXCursor_TemplateTypeParameter) &&
+        looks_like_dependent_member_type_spelling(
+            &ty.canonical_type().spelling(),
+        )
+    {
+        return CXChildVisit_Continue;
     }
 
     *result = Item::from_ty_with_id(id, ty, cur, parent_id, ctx);
