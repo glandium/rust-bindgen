@@ -113,7 +113,7 @@ jobs:
           - os: ubuntu-24.04-arm
             libtinfo: libtinfo5_6.3-2ubuntu0.1_arm64.deb
             ubuntu_repo: https://ports.ubuntu.com/ubuntu-ports/pool/universe/n/ncurses/
-        llvm_version: ["9.0", "16.0"]
+        llvm_version: ["9.0", "16.0", "20.0", "21.0"]
         release_build: [0, 1]
         no_default_features: [0, 1]
         # FIXME: There are no pre-built static libclang libraries, so the
